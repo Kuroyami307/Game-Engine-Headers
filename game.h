@@ -16,8 +16,24 @@
 
 const glm::vec3 GRAVITY(0.0f, -70.0f, 0.0f);
 
+bool is3D = false;
+
 glm::mat4 view          = glm::mat4(1.0f);
 glm::mat4 projection    = glm::mat4(1.0f);
+
+//structs to implement lighting
+struct lightComponents {
+    float ambientCoeff;
+    float diffuseCoeff;
+    float specularCoeff;
+};
+
+struct light{
+    glm::vec3 position;
+    glm::vec4 color;
+    float intensity;
+    // float attenuation;
+};
 
 //struct that stores all the stuffs needed to implement physics
 struct physicsComponent{
@@ -117,11 +133,16 @@ class model{
     private:
     std::vector<float>vertices;
     std::vector<int>faces;
-    std::vector<float>vertexNormals;
+    // std::vector<float>vertexNormals;
+    // std::vector<float> flatVertices;
+    // std::vector<float>flatNormals;
     std::ifstream file;
     shader *modelShader;
     glm::vec4 color;
     unsigned int VBO_position, VBO_normal, VAO, EBO;
+    unsigned int VAO_Flat, VBO_FlatPosition, VBO_FlatShadingNormal;
+    bool flatShading;
+    int flatVerticesSize;
 
     //std::vector<float>vertexTestures;
     public:
@@ -140,12 +161,11 @@ class model{
 
         glBindBuffer(GL_ARRAY_BUFFER, VBO_position);
         glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, faces.size() * sizeof(int), faces.data(), GL_STATIC_DRAW);
-
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
 
         // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
         glBindBuffer(GL_ARRAY_BUFFER, 0); 
@@ -172,9 +192,9 @@ class model{
                 {
                     float x, y, z;
                     sscanf(line.c_str(), "v %f %f %f", &x, &y, &z);
-                    vertices.push_back(x/2);
-                    vertices.push_back(y/2);
-                    vertices.push_back(z/2);
+                    vertices.push_back(x);
+                    vertices.push_back(y);
+                    vertices.push_back(z);
                 }
 
                 if(line[0] == 'f' && line[1] == ' ')
@@ -190,6 +210,8 @@ class model{
         }
 
         attachBuffers(); 
+        calculateNormals();
+        calculateFlatVertexAndNormals();
     }
     
     void block2D(float length, float breadth)
@@ -217,40 +239,49 @@ class model{
         vertices.clear();
         faces.clear();
 
+        is3D = true;
+        flatShading = true;
+
         vertices = {
-            length/2, breadth/2, 0,
-            -length/2, breadth/2, 0,
-            length/2, -breadth/2, 0,
-            -length/2, -breadth/2, 0,
+            length/2, breadth/2, -width/2,
+            -length/2, breadth/2, -width/2,
+            length/2, -breadth/2, -width/2,
+            -length/2, -breadth/2, -width/2,
 
-            length/2, breadth/2, width,
-            -length/2, breadth/2, width,
-            length/2, -breadth/2, width,
-            -length/2, -breadth/2, width
+            length/2, breadth/2, width/2,
+            -length/2, breadth/2, width/2,
+            length/2, -breadth/2, width/2,
+            -length/2, -breadth/2, width/2
         };
-
+        
         faces = {
-            // Back face
-            0, 1, 2,
-            2, 3, 0,
-            // Front face
+            // Back face (z = 0)
+            0, 2, 1,
+            1, 2, 3,
+        
+            // Front face (z = width)
             4, 5, 6,
-            6, 7, 4,
-            // Left face
-            4, 0, 3,
-            3, 7, 4,
-            // Right face
-            1, 5, 6,
-            6, 2, 1,
-            // Bottom face
-            4, 5, 1,
-            1, 0, 4,
-            // Top face
-            3, 2, 6,
-            6, 7, 3
+            5, 7, 6,
+        
+            // Left face (x = -length/2)
+            1, 3, 5,
+            5, 3, 7,
+        
+            // Right face (x = +length/2)
+            0, 4, 2,
+            4, 6, 2,
+        
+            // Top face (y = +breadth/2)
+            0, 1, 4,
+            1, 5, 4,
+        
+            // Bottom face (y = -breadth/2)
+            2, 6, 3,
+            3, 6, 7
         };
-
+        
         attachBuffers();
+        calculateFlatVertexAndNormals();
     }
 
     void circle2D(float radius)
@@ -281,6 +312,7 @@ class model{
 
     void calculateNormals()
     {
+        std::vector<float> vertexNormals;
         vertexNormals.resize(vertices.size(), 0.0f);
 
         for(int i = 0, size = faces.size()/3; i < size; i++)
@@ -332,8 +364,70 @@ class model{
         glEnableVertexAttribArray(1);
 
         glBindBuffer(GL_ARRAY_BUFFER, 0); 
+        vertexNormals.clear();
     }
 
+    void calculateFlatVertexAndNormals()
+    {
+        std::vector<float> flatVertices;
+        std::vector<float> flatNormals;
+        
+        flatVertices.clear();
+        int size = faces.size();
+
+        for(int i = 0; i < size; i++)
+        {
+            flatVertices.push_back(vertices[3 * faces[i] + 0]);
+            flatVertices.push_back(vertices[3 * faces[i] + 1]);
+            flatVertices.push_back(vertices[3 * faces[i] + 2]);
+        }
+    
+        flatNormals.resize(flatVertices.size(), 0.0f);
+
+        for (int i = 0; i < flatVertices.size(); i += 9)
+        {
+            glm::vec3 v1(flatVertices[i + 0], flatVertices[i + 1], flatVertices[i + 2]);
+            glm::vec3 v2(flatVertices[i + 3], flatVertices[i + 4], flatVertices[i + 5]);
+            glm::vec3 v3(flatVertices[i + 6], flatVertices[i + 7], flatVertices[i + 8]);
+
+            glm::vec3 normal = glm::normalize(glm::cross(v2 - v1, v3 - v1));
+
+            flatNormals[i + 0] = normal.x;
+            flatNormals[i + 1] = normal.y;
+            flatNormals[i + 2] = normal.z;
+
+            flatNormals[i + 3] = normal.x;
+            flatNormals[i + 4] = normal.y;
+            flatNormals[i + 5] = normal.z;
+
+            flatNormals[i + 6] = normal.x;
+            flatNormals[i + 7] = normal.y;
+            flatNormals[i + 8] = normal.z;
+        }
+
+        flatVerticesSize = flatVertices.size();
+
+        glGenVertexArrays(1, &VAO_Flat);
+        glGenBuffers(1, &VBO_FlatPosition);
+        glGenBuffers(1, &VBO_FlatShadingNormal);
+
+        // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
+        glBindVertexArray(VAO_Flat);
+
+        glBindBuffer(GL_ARRAY_BUFFER, VBO_FlatPosition);
+        glBufferData(GL_ARRAY_BUFFER, flatVertices.size() * sizeof(float), flatVertices.data(), GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+
+        glBindBuffer(GL_ARRAY_BUFFER, VBO_FlatShadingNormal);
+        glBufferData(GL_ARRAY_BUFFER, flatNormals.size() * sizeof(float), flatNormals.data(), GL_STATIC_DRAW);
+
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
     //set functions to set different values in the class
     void setShader(shader *modelShader)
     {
@@ -399,23 +493,39 @@ class model{
     //functions for rendering
     void draw(bool isCircle)
     {
-        glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-        //glDrawArrays(GL_TRIANGLES, 0, 6);
-        if(isCircle)
-            glDrawElements(GL_TRIANGLE_FAN, faces.size(), GL_UNSIGNED_INT, 0);
+        if(is3D && flatShading)
+        {
+            glBindVertexArray(VAO_Flat);
+            glDrawArrays(GL_TRIANGLES, 0, flatVerticesSize/3);
+        }
         else
-            glDrawElements(GL_TRIANGLES, faces.size(), GL_UNSIGNED_INT, 0);
-        // glBindVertexArray(0); // no need to unbind it every time 
+        {
+            glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
+            //glDrawArrays(GL_TRIANGLES, 0, 6);
+            if(isCircle)
+                glDrawElements(GL_TRIANGLE_FAN, faces.size(), GL_UNSIGNED_INT, 0);
+            else
+                glDrawElements(GL_TRIANGLES, faces.size(), GL_UNSIGNED_INT, 0);
+        }
     }
 
-    void useShader(glm::mat4 model)
+    void useShader(glm::mat4 model, light lightSource = {glm::vec3(0.0f), glm::vec4(0.0f), 0.0f}, glm::vec3 cameraPosition = glm::vec3(0.0f))
     {
         modelShader->use();
 
         modelShader->setMat4("model", model);
         modelShader->setMat4("view", view);
         modelShader->setMat4("projection", projection);
-        modelShader->setVec4("color", color);
+        modelShader->setVec3("ourColor", glm::vec3(color));
+
+        if(is3D)
+        {
+            modelShader->setVec3("cameraPosition", cameraPosition);
+            
+            modelShader->setVec3("lightPosition", lightSource.position);
+            // modelShader->setVec4("color", lightSource.color);
+            modelShader->setFloat("lightIntensity", lightSource.intensity);
+        }
     }
 
     ~model()
@@ -423,6 +533,11 @@ class model{
         glDeleteVertexArrays(1, &VAO);
         glDeleteBuffers(1, &VBO_position);
         glDeleteBuffers(1, &EBO);
+        glDeleteBuffers(1, &VBO_normal);
+
+        glDeleteVertexArrays(1, &VAO_Flat);
+        glDeleteBuffers(1, &VBO_FlatPosition);
+        glDeleteBuffers(1, &VBO_FlatShadingNormal);
     }
 };
 
@@ -903,10 +1018,10 @@ class gameObject{
         return object.getAverageVertices();
     }
     //rendering funtions
-    void draw()
+    void draw(light lightSource, glm::vec3 cameraPos)
     {
         objTranslation = glm::translate(glm::mat4(1.0f), physics.position);
-        object.useShader(model * objTranslation);
+        object.useShader(model * objTranslation, lightSource, cameraPos);
         object.draw(isCircle);
     }
 
@@ -918,6 +1033,26 @@ class player : public gameObject {
     //light?
 
     public:
+    player()
+    {
+        object.setColor(glm::vec4(0.4f,0.4f,0.8f, 1.0f));
+
+        physics.mass = 100.0f;
+        physics.hasGravity = true;
+        physics.acceleration = GRAVITY;
+
+        physics.onGround = false;
+        physics.hasCollision = true;
+        physics.coeffOfRestitution = 0.0f;
+        // physics.boundary = object.getBoundary();
+        
+        glm::vec4 temp(physics.position, 1.0f);
+        temp = temp * model;
+
+        playerCam.setCamera(glm::vec3(temp.x, 0.0f, 50.0f), glm::vec3(temp.x, 0.0f, temp.z), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    }
+
     player(shader* modelShader)
     {
         object.setShader(modelShader);
@@ -998,6 +1133,21 @@ class player : public gameObject {
         // else physics.acceleration.y = GRAVITY.y;
     }
 
+    void movements(GLFWwindow* window)
+    {
+        if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            physics.position += glm::vec3(0.0f, 1.0f, 0.0f);
+
+        if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            physics.position += glm::vec3(0.0f, -1.0f, 0.0f);
+
+        if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            physics.position += glm::vec3(1.0f, 0.0f, 0.0f);
+
+        if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            physics.position += glm::vec3(-1.0f, 0.0f, 0.0f);
+    }
+    
     //camera stuff
     void updateCamera()
     {
@@ -1077,6 +1227,17 @@ class obstacle : public gameObject {
 
 class ground : public gameObject {
     public:
+    ground()
+    {
+        object.setColor(glm::vec4(0.3f, 0.3f, 0.3f, 1.0f));
+
+        physics.mass = 500;
+        physics.acceleration = GRAVITY;
+
+        physics.hasCollision = true;
+        physics.isStatic = true;
+    }
+
     ground(shader* modelShader, float length, float breadth, float width = 0)
     {
         object.setShader(modelShader);

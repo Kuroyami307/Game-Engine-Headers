@@ -128,6 +128,13 @@ class shader
         uniformLoc = glGetUniformLocation(progID, name.c_str()); 
         glUniform4f(uniformLoc, vec4D.x, vec4D.y, vec4D.z, vec4D.w); 
     }
+
+    void setVec3(const std::string &name, glm::vec3 vec3D) const
+    {
+        int uniformLoc;
+        uniformLoc = glGetUniformLocation(progID, name.c_str()); 
+        glUniform3f(uniformLoc, vec3D.x, vec3D.y, vec3D.z); 
+    }
 };
 
 #endif
