@@ -7,10 +7,12 @@
 #include <string>
 #include<cmath>
 #include <algorithm>
+#include <cstdlib>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>  // For transformations like translate, rotate, scale
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/random.hpp>
 
 #include "shader.h"
 
@@ -20,6 +22,84 @@ bool is3D = false;
 
 glm::mat4 view          = glm::mat4(1.0f);
 glm::mat4 projection    = glm::mat4(1.0f);
+
+std::vector<float> heightMap;
+//function for perlin noise generation
+std::vector <float> perlin(int length, int gridSize, float amplitude)
+{
+    std::vector <float> heightMap;
+
+    int angles[gridSize * gridSize];
+    for(int i = 0, s = gridSize * gridSize; i < s; i++)
+    {
+        // srand(i % 10);
+        angles[i] = rand() % 360;
+        // angles[i] = glm::linearRand(0.0f, 360.0f);
+    }
+
+    int terrainSize = length * length;
+
+    for(int i = 0; i < terrainSize; i++)
+    {
+        float x = i % length;
+        float y = i / length;
+        
+        float spacing = length / gridSize;
+
+        int row = (int) y / spacing;
+        int colm = (int) x / spacing;
+
+        glm::vec2 point(x,y);
+        
+        glm::vec2 corners[4] = {
+            glm::vec2((colm) * spacing, (row) * spacing), 
+            glm::vec2((colm + 1) * spacing, (row) * spacing), 
+            glm::vec2((colm) * spacing, (row + 1) * spacing),
+            glm::vec2((colm + 1) * spacing, (row + 1) * spacing)
+        };
+
+        float dotProducts[4] = {
+            dot((point - corners[0]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row) + (colm)]), sin(3.1415 / 180 * angles[gridSize * (row) + (colm)]))),
+            dot((point - corners[1]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row) + (colm + 1)]), sin(3.1415 / 180 * angles[gridSize * (row) + (colm + 1)]))),
+            dot((point - corners[2]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row + 1) + (colm)]), sin(3.1415 / 180 * angles[gridSize * (row + 1) + (colm)]))),
+            dot((point - corners[3]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row + 1) + (colm + 1)]), sin(3.1415 / 180 * angles[gridSize * (row + 1) + (colm + 1)])))
+        };
+
+        // float r1 = dotProducts[0] * (1 - (x - corners[0].x)/(corners[1].x - corners[0].x)) + dotProducts[1] * (x - corners[0].x)/(corners[1].x - corners[0].x);
+        // float r2 = dotProducts[2] * (1 - (x - corners[2].x)/(corners[3].x - corners[2].x)) + dotProducts[3] * (x - corners[2].x)/(corners[3].x - corners[2].x);
+
+        // float r3 = r1 * (1 - (y - corners[0].y)/(corners[2].y - corners[0].y)) + r2 * (y - corners[0].y)/(corners[2].y - corners[0].y);
+
+        float tx = (x - corners[0].x) / spacing;
+        float ty = (y - corners[0].y) / spacing;
+
+        float u = tx * tx * tx * (tx * (tx * 6 - 15) + 10);
+        float v = ty * ty * ty * (ty * (ty * 6 - 15) + 10);
+
+        float z = 1 / (1.414 * spacing) * glm::mix(glm::mix(dotProducts[0], dotProducts[1], u), glm::mix(dotProducts[2], dotProducts[3], u), v);
+        
+        // if(z <= -10)
+        //     vertices[3 * i + 2] = -30.0f;
+        // else
+
+        heightMap.push_back(amplitude * z);
+        // vertices[3 * i + 2] += z;
+    }
+
+    return heightMap;
+}
+
+std::vector<float> add(std::vector<float> v1, std::vector<float> v2)
+{
+    std::vector<float> result;
+
+    for(int i = 0,s = v1.size(); i < s; i++)
+    {
+        result.push_back(v1[i] + v2[i]);
+    }
+
+    return result;
+}
 
 //structs to implement lighting
 struct lightComponents {
@@ -128,17 +208,19 @@ class camera{
     }
 };
 
+class player;
 //model class which stores the vertices, faces, normal, color of a model and renders them
 class model{
     private:
     std::vector<float>vertices;
-    std::vector<int>faces;
-    // std::vector<float>vertexNormals;
+    std::vector<unsigned int>faces;
+    std::vector<float>vertexNormals;
     // std::vector<float> flatVertices;
     // std::vector<float>flatNormals;
     std::ifstream file;
     shader *modelShader;
     glm::vec4 color;
+    glm::vec4 highlightColor;
     unsigned int VBO_position, VBO_normal, VAO, EBO;
     unsigned int VAO_Flat, VBO_FlatPosition, VBO_FlatShadingNormal;
     bool flatShading;
@@ -153,17 +235,40 @@ class model{
 
     void attachBuffers()
     {
+         // Delete previous if already generated
+        if (glIsVertexArray(VAO))
+            glDeleteVertexArrays(1, &VAO);
+        if (glIsBuffer(VBO_position))
+            glDeleteBuffers(1, &VBO_position);
+        if (glIsBuffer(VBO_normal))
+            glDeleteBuffers(1, &VBO_position);
+        if (glIsBuffer(EBO))
+            glDeleteBuffers(1, &EBO);
+
+
         glGenVertexArrays(1, &VAO);
         glGenBuffers(1, &VBO_position);
         glGenBuffers(1, &EBO);
         // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
         glBindVertexArray(VAO);
 
+        //Positions
         glBindBuffer(GL_ARRAY_BUFFER, VBO_position);
         glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
 
+        if(is3D)
+        {
+            //Normals
+            glGenBuffers(1, &VBO_normal);
+            glBindBuffer(GL_ARRAY_BUFFER, VBO_normal);
+            glBufferData(GL_ARRAY_BUFFER, vertexNormals.size() * sizeof(float), vertexNormals.data(), GL_STATIC_DRAW);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(1);
+        }
+
+        //Indices
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, faces.size() * sizeof(int), faces.data(), GL_STATIC_DRAW);
 
@@ -197,11 +302,21 @@ class model{
                     vertices.push_back(z);
                 }
 
+                // if(line[0] == 'f' && line[1] == ' ')
+                // {
+                //     int x, y, z;
+                //     int a, b, c, p, q, r;
+                //     sscanf(line.c_str(), "f %d/%d/%d %d/%d/%d %d/%d/%d", &x, &a, &p, &y, &b, &q, &z, &c, &r);
+                //     faces.push_back(x-1);
+                //     faces.push_back(y-1);
+                //     faces.push_back(z-1);
+                // }
+
                 if(line[0] == 'f' && line[1] == ' ')
                 {
                     int x, y, z;
                     int a, b, c, p, q, r;
-                    sscanf(line.c_str(), "f %d/%d/%d %d/%d/%d %d/%d/%d", &x, &a, &p, &y, &b, &q, &z, &c, &r);
+                    sscanf(line.c_str(), "f %d/%d %d/%d %d/%d", &x, &a, &y, &b, &z, &c);
                     faces.push_back(x-1);
                     faces.push_back(y-1);
                     faces.push_back(z-1);
@@ -209,9 +324,9 @@ class model{
             }
         }
 
-        attachBuffers(); 
         calculateNormals();
-        calculateFlatVertexAndNormals();
+        attachBuffers(); 
+        // calculateFlatVertexAndNormals();
     }
     
     void block2D(float length, float breadth)
@@ -240,7 +355,7 @@ class model{
         faces.clear();
 
         is3D = true;
-        flatShading = true;
+        // flatShading = true;
 
         vertices = {
             length/2, breadth/2, -width/2,
@@ -279,9 +394,397 @@ class model{
             2, 6, 3,
             3, 6, 7
         };
-        
+
+        calculateNormals();
         attachBuffers();
+
+        // calculateFlatVertexAndNormals();
+    }
+
+    void sheet3D(float length, float breadth, int subdivisions)
+    {
+        is3D = true;
+        flatShading = true;
+
+        int parts = subdivisions + 2;
+
+        float partLength = length/(parts - 1);
+        float partBreadth = breadth/(parts - 1);
+
+        vertices.clear();
+        faces.clear();
+
+        for(int i = 0; i < parts; i++)
+        {
+            for( int j = 0; j < parts; j++)
+            {
+                // vertices.push_back(j * partLength - length/2);
+                // vertices.push_back(i * partBreadth - breadth/2);
+                vertices.push_back(j * partLength);
+                vertices.push_back(i * partBreadth);
+                vertices.push_back(0.0f);
+            }
+        }
+
+        for(int i = 0; i < parts - 1; i++)
+        {
+            for(int j = 0; j < parts - 1; j++)
+            {
+                faces.push_back(parts * i + j);
+                faces.push_back(parts * i + (j + 1));
+                faces.push_back(parts * (i + 1) + j);
+
+                faces.push_back(parts * (i + 1) + j);
+                faces.push_back(parts * i + (j + 1));
+                faces.push_back(parts * (i + 1) + (j + 1));
+            }
+        }
+
         calculateFlatVertexAndNormals();
+    }
+    
+    void water(float size, int subdivisions)
+    {
+        sheet3D(size, size, subdivisions);
+        
+        flatShading = false;
+
+        int sizes = vertices.size() / 3;
+
+        for(int i = 0; i < sizes; i++)
+        {
+            float x = vertices[3 * i + 0];
+            float y = vertices[3 * i + 1];
+            
+            vertices[3 * i + 2] = 5 * sin(glm::radians(x)) + 2 * cos(1.5 * glm::radians(x * y));
+        }
+        calculateNormals();
+        attachBuffers();
+    }
+
+    void terrain(float size, int subdivisions)
+    {
+        sheet3D(size, size, subdivisions);
+        
+        flatShading = false;
+
+        heightMap.clear();
+        heightMap = perlin(size, 4, 20);
+        // heightMap = add(perlin(size, 4, 80),perlin(size, 10, 30));
+
+        for(int i = 0, s = vertices.size()/3; i < s; i++)
+        {
+            vertices[3 * i + 2] = heightMap[i];
+        }
+
+        calculateNormals();
+        attachBuffers();
+    }
+
+    // void perlin(float length, int gridSize, float amplitude)
+    // {
+    //     int angles[gridSize * gridSize];
+    //     for(int i = 0, s = gridSize * gridSize; i < s; i++)
+    //     {
+    //         // srand(i % 10);
+    //         angles[i] = rand() % 360;
+    //         // angles[i] = glm::linearRand(0.0f, 360.0f);
+    //     }
+
+    //     int terrainSize = vertices.size() / 3;
+
+    //     for(int i = 0; i < terrainSize; i++)
+    //     {
+    //         float x = vertices[3 * i + 0];
+    //         float y = vertices[3 * i + 1];
+            
+    //         float spacing = length / gridSize;
+
+    //         int row = (int) y / spacing;
+    //         int colm = (int) x / spacing;
+
+    //         glm::vec2 point(x,y);
+            
+    //         glm::vec2 corners[4] = {
+    //             glm::vec2((colm) * spacing, (row) * spacing), 
+    //             glm::vec2((colm + 1) * spacing, (row) * spacing), 
+    //             glm::vec2((colm) * spacing, (row + 1) * spacing),
+    //             glm::vec2((colm + 1) * spacing, (row + 1) * spacing)
+    //         };
+
+    //         float dotProducts[4] = {
+    //             dot((point - corners[0]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row) + (colm)]), sin(3.1415 / 180 * angles[gridSize * (row) + (colm)]))),
+    //             dot((point - corners[1]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row) + (colm + 1)]), sin(3.1415 / 180 * angles[gridSize * (row) + (colm + 1)]))),
+    //             dot((point - corners[2]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row + 1) + (colm)]), sin(3.1415 / 180 * angles[gridSize * (row + 1) + (colm)]))),
+    //             dot((point - corners[3]), glm::vec2(cos(3.1415 / 180 * angles[gridSize * (row + 1) + (colm + 1)]), sin(3.1415 / 180 * angles[gridSize * (row + 1) + (colm + 1)])))
+    //         };
+
+    //         // float r1 = dotProducts[0] * (1 - (x - corners[0].x)/(corners[1].x - corners[0].x)) + dotProducts[1] * (x - corners[0].x)/(corners[1].x - corners[0].x);
+    //         // float r2 = dotProducts[2] * (1 - (x - corners[2].x)/(corners[3].x - corners[2].x)) + dotProducts[3] * (x - corners[2].x)/(corners[3].x - corners[2].x);
+
+    //         // float r3 = r1 * (1 - (y - corners[0].y)/(corners[2].y - corners[0].y)) + r2 * (y - corners[0].y)/(corners[2].y - corners[0].y);
+
+    //         float tx = (x - corners[0].x) / spacing;
+    //         float ty = (y - corners[0].y) / spacing;
+
+    //         float u = tx * tx * tx * (tx * (tx * 6 - 15) + 10);
+    //         float v = ty * ty * ty * (ty * (ty * 6 - 15) + 10);
+
+    //         float z = 1 / (1.414 * spacing) * glm::mix(glm::mix(dotProducts[0], dotProducts[1], u), glm::mix(dotProducts[2], dotProducts[3], u), v);
+            
+    //         // if(z <= -10)
+    //         //     vertices[3 * i + 2] = -30.0f;
+    //         // else
+
+    //         vertices[3 * i + 2] += amplitude * z - 20;
+    //         // vertices[3 * i + 2] += z;
+    //     }
+    // }
+
+    std::vector<float> applyTranslation(std::vector<float> verts, glm::vec3 position)
+    {
+        std::vector<float> transformedVerts;
+        for(int i = 0, s = verts.size()/3; i < s; i++)
+        {
+            transformedVerts.push_back(verts[3 * i + 0] + position.x);
+            transformedVerts.push_back(verts[3 * i + 1] + position.y);
+            transformedVerts.push_back(verts[3 * i + 2] + position.z);
+        }
+
+        return transformedVerts;
+    }
+
+    std::vector<float> applyMatrix(std::vector<float> verts, glm::mat4 matrix)
+    {
+        std::vector<float> transformedVerts;
+        for(int i = 0, s = verts.size()/3; i < s; i++)
+        {
+            glm::vec4 point(verts[3 * i + 0], verts[3 * i + 1], verts[3 * i + 2], 1.0f);
+
+            point = matrix * point;
+
+            transformedVerts.push_back(point.x);
+            transformedVerts.push_back(point.y);
+            transformedVerts.push_back(point.z);
+        }
+
+        return transformedVerts;
+    }
+
+    std::vector<int> applyOffset(std::vector<int> indices, int offset, int vertCount)
+    {
+        std::vector<int> finalIndices;
+        for(int i = 0, s = indices.size(); i < s; i++)
+        {
+            finalIndices.push_back(indices[i] + vertCount / 3 * offset);
+        }
+
+        return finalIndices;
+    }
+
+    glm::vec3 quadraticBezier(glm::vec3 p0, glm::vec3 p1, glm::vec3 p2, float t)
+    {
+        float u = 1- t;
+        return u * u * p0 + 2.0f * u * t * p1 + t * t * p2;
+    }
+
+    std::vector<float> applyCurvature(std::vector<float> verts)
+    {
+        int size = verts.size() / 3 - 1;
+        glm::vec3 p0(0.0f);
+        glm::vec3 p1(0, (float) (rand() % 6), 8 + (float)(rand() % 5));
+        glm::vec3 p2(0, - (float)(4 + rand() % 5), 25);
+
+        std::vector<float> curvedVerts;
+
+        for(int i = 0; i <= size; i++)
+        {
+            float t = verts[3 * i + 2] / p2.z;
+
+            glm::vec3 curved = quadraticBezier(p0, p1, p2, t);
+
+            curvedVerts.push_back(verts[3 * i + 0]);
+            curvedVerts.push_back(verts[3 * i + 1] + curved.y);
+            curvedVerts.push_back(verts[3 * i + 2]);
+        }
+
+        return curvedVerts;
+    }
+
+    void grass(float size, int grid)
+    {
+        is3D = true;
+        flatShading = false;
+        //model data for each blade of grass
+
+        //Low LOD
+        // std::vector<float> grassVertex = {
+        //     -1.0, 0, 0,
+        //     1.0, 0, 0,
+        //     -1.0, 0, 6,
+        //     1.0, 0, 6,
+        //     -0.6, 0, 12,
+        //     0.6, 0, 12,
+        //     0, 0, 20
+        // };
+        // std::vector<int> grassIndices = {
+        //     0, 1, 2,
+        //     1, 3, 2,
+        //     2, 3, 4,
+        //     3, 5, 4,
+        //     4, 5, 6
+        // };
+
+        //Medium LOD
+        // std::vector<float> grassVertex = {
+        //     // Base
+        //     -1.5f, 0.0f, 0.0f,   // 0
+        //      1.5f, 0.0f, 0.0f,   // 1
+        
+        //     // 1st Segment
+        //     -1.3f, 0.0f, 4.0f,   // 2
+        //      1.3f, 0.0f, 4.0f,   // 3
+        
+        //     // 2nd Segment
+        //     -1.0f, 0.0f, 8.0f,   // 4
+        //      1.0f, 0.0f, 8.0f,   // 5
+        
+        //     // 3rd Segment
+        //     -0.6f, 0.0f, 12.0f,  // 6
+        //      0.6f, 0.0f, 12.0f,  // 7
+        
+        //     // 4th Segment
+        //     -0.3f, 0.0f, 16.0f,  // 8
+        //      0.3f, 0.0f, 16.0f,  // 9
+        
+        //     // 5th Segment
+        //     -0.1f, 0.0f, 20.0f,  // 10
+        //      0.1f, 0.0f, 20.0f,  // 11
+        
+        //     // Tip (center)
+        //      0.0f, 0.0f, 25.0f   // 12
+        // };
+
+        // std::vector<int> grassIndices = {
+        //     // Base
+        //     0, 1, 2,
+        //     1, 3, 2,
+        
+        //     2, 3, 4,
+        //     3, 5, 4,
+        
+        //     4, 5, 6,
+        //     5, 7, 6,
+        
+        //     6, 7, 8,
+        //     7, 9, 8,
+        
+        //     8, 9, 10,
+        //     9, 11, 10,
+        
+        //     10, 11, 12  // tip
+        // };
+
+        //High LOD
+        std::vector<float> grassVertex = {
+            // Base
+            -1.0f, -0.3f, 0.0f,  // 0: Left
+             0.0f, 0.3f, 0.0f,  // 1: Center (spine start)
+             1.0f, -0.3f, 0.0f,  // 2: Right
+        
+            // Segment 1 (z=4)
+            -1.0f, -0.3f, 4.0f,  // 3: Left
+             0.0f, 0.3f, 4.0f,  // 4: Center spine
+             1.0f, -0.3f, 4.0f,  // 5: Right
+        
+            // Segment 2 (z=8)
+            -1.0f, -0.3f, 8.0f,  // 6: Left
+             0.0f, 0.3f, 8.0f,  // 7: Center spine
+             1.0f, -0.3f, 8.0f,  // 8: Right
+        
+            // Segment 3 (z=12)
+            -0.8f, -0.3f, 12.0f, // 9: Left
+             0.0f, 0.3f, 12.0f, // 10: Center spine
+             0.8f, -0.3f, 12.0f, // 11: Right
+        
+            // Segment 4 (z=16)
+            -0.5f, -0.3f, 16.0f, // 12: Left
+             0.0f, 0.3f, 16.0f, // 13: Center spine
+             0.5f, -0.3f, 16.0f, // 14: Right
+        
+            // Segment 5 (z=20)
+            -0.5f, -0.3f, 20.0f, // 15: Left
+             0.0f, 0.3f, 20.0f, // 16: Center spine
+             0.5f, -0.3f, 20.0f, // 17: Right
+        
+            // Tip (z=25)
+             0.0f, 0.0f, 25.0f  // 18: Spine tip
+        };
+        
+        std::vector<int> grassIndices = {
+            // Base to Segment 1
+            0, 1, 3,   // Left base triangle
+            1, 4, 3,   // Left upper triangle
+            1, 2, 5,   // Right base triangle
+            1, 5, 4,   // Right upper triangle
+        
+            // Segment 1 to 2
+            3, 4, 6,   // Left lower
+            4, 7, 6,   // Left upper
+            4, 5, 8,   // Right lower
+            4, 8, 7,   // Right upper
+        
+            // Segment 2 to 3
+            6, 7, 9,   // Left lower
+            7, 10, 9,  // Left upper
+            7, 8, 11,  // Right lower
+            7, 11, 10, // Right upper
+        
+            // Segment 3 to 4
+            9, 10, 12, // Left lower
+            10, 13, 12,// Left upper
+            10, 11, 14,// Right lower
+            10, 14, 13,// Right upper
+        
+            // Segment 4 to 5
+            12, 13, 15,// Left lower
+            13, 16, 15,// Left upper
+            13, 14, 17,// Right lower
+            13, 17, 16,// Right upper
+        
+            // Tip (connect last segment to spine tip)
+            15, 16, 18,// Left tip
+            16, 17, 18 // Right tip
+        };
+
+        float spacing = size / grid;
+        for(int i = 0; i < grid; i++)
+        {
+            for(int j = 0; j < grid; j++)
+            {
+                // if(heightMap[size * j + i] < -10) continue;
+
+                float randomnessX = ((float) (rand() % 100) / 100) * (spacing/4);
+                randomnessX = (rand() % 100 < 50)? -1 * randomnessX : randomnessX;
+
+                float randomnessY = ((float) (rand() % 100) / 100) * (spacing/4);
+                randomnessY = (rand() % 100 < 50)? -1 * randomnessY : randomnessY;
+
+                glm::mat4 grassMatrix(1.0f);
+                grassMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(i * spacing + spacing/2 + randomnessX, j * spacing + spacing/2 + randomnessY,0 /*heightMap[size * j + i]*/)) * glm::rotate(glm::mat4(1.0f), glm::radians((float)(rand() % 360)), glm::vec3(0.0f, 0.0f, 1.0f)) * glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, 1.0f, ((float) ((rand() % 11) / 15) + 0.6)));
+                // std::vector<float> transformed = applyTranslation(grassVertex, glm::vec3(j * spacing + spacing/2 + randomnessX, i * spacing + spacing/2 + randomnessY, 0));
+                std::vector<float> transformed = applyMatrix(applyCurvature(grassVertex), grassMatrix);
+                vertices.insert(vertices.end(), transformed.begin(), transformed.end());
+
+                int currentVertexCount = vertices.size(); // in floats
+                std::vector<int> offsetIndices = applyOffset(grassIndices, 1, currentVertexCount);  // offset=1 since vertCount already accounts for total
+                // std::vector<int> offsetIndices = applyOffset(grassIndices, grid * i + k, grassVertex.size());
+                faces.insert(faces.end(), offsetIndices.begin(), offsetIndices.end());
+            }
+        }
+        calculateNormals();
+        attachBuffers();
+        // calculateFlatVertexAndNormals();
     }
 
     void circle2D(float radius)
@@ -312,7 +815,9 @@ class model{
 
     void calculateNormals()
     {
-        std::vector<float> vertexNormals;
+        if(!is3D) return;
+
+        vertexNormals.clear();
         vertexNormals.resize(vertices.size(), 0.0f);
 
         for(int i = 0, size = faces.size()/3; i < size; i++)
@@ -352,19 +857,6 @@ class model{
             vertexNormals[i+1] = norm.y;
             vertexNormals[i+2] = norm.z;
         }
-
-        glGenBuffers(1, &VBO_normal);
-
-        glBindVertexArray(VAO);
-
-        glBindBuffer(GL_ARRAY_BUFFER, VBO_normal);
-        glBufferData(GL_ARRAY_BUFFER, vertexNormals.size() * sizeof(float), vertexNormals.data(), GL_STATIC_DRAW);
-
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(1);
-
-        glBindBuffer(GL_ARRAY_BUFFER, 0); 
-        vertexNormals.clear();
     }
 
     void calculateFlatVertexAndNormals()
@@ -428,6 +920,7 @@ class model{
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
+    
     //set functions to set different values in the class
     void setShader(shader *modelShader)
     {
@@ -439,7 +932,17 @@ class model{
         this->color = color;
     }
 
+    void setHighlightColor(glm::vec4 color)
+    {
+        this->highlightColor = color;
+    }
+
     //get function to get different values from the class
+    glm::vec4 getColor()
+    {
+        return color;
+    }
+
     float getAverageVertices()
     {
         float average = 0;
@@ -516,7 +1019,8 @@ class model{
         modelShader->setMat4("model", model);
         modelShader->setMat4("view", view);
         modelShader->setMat4("projection", projection);
-        modelShader->setVec3("ourColor", glm::vec3(color));
+        modelShader->setVec3("baseColor", glm::vec3(color));
+        modelShader->setVec3("highlightColor", glm::vec3(highlightColor));
 
         if(is3D)
         {
@@ -526,6 +1030,11 @@ class model{
             // modelShader->setVec4("color", lightSource.color);
             modelShader->setFloat("lightIntensity", lightSource.intensity);
         }
+    }
+
+    void setUniform(const std::string uniformName, float uniformValue)
+    {
+        modelShader->setFloat(uniformName.c_str(), uniformValue);
     }
 
     ~model()
@@ -550,6 +1059,8 @@ class gameObject{
     bool isCircle; // 0 means block 1 means circle
 
     public:
+    friend class player;
+
     gameObject()
     {
         initialize();
@@ -574,6 +1085,11 @@ class gameObject{
         model = glm::mat4(1.0f);
     }
 
+    void loadModel(std::string filepath)
+    {
+        object.loadModel(filepath.c_str());
+    }
+
     void block2D(float length, float breadth)
     {
         isCircle = false;
@@ -588,6 +1104,27 @@ class gameObject{
         physics.boundary = object.getBoundary();
     }
     
+    void sheet3D(float length, float breadth, int subdivisions = 0)
+    {
+        object.sheet3D(length, breadth, subdivisions);
+    }
+
+    void terrain(float length, int subdivisions = 0)
+    {
+        object.terrain(length, subdivisions);
+    }
+
+    void water(float length, int subdivisions = 0)
+    {
+        object.water(length, subdivisions);
+    }
+
+    void grass(float length, int subdivisions = 0)
+    {
+        object.grass(length, subdivisions);
+    }
+
+
     void circle2D(float radius)
     {
         isCircle = true;
@@ -599,13 +1136,13 @@ class gameObject{
     float applyTransformToFloat(float coordinate, char axis='x')
     {
         if(axis == 'x' || axis == 'X')
-            return glm::vec4(model * objTranslation * glm::vec4(coordinate, 0.0f, 0.0f, 1.0f)).x;
+            return glm::vec4(objTranslation * model * glm::vec4(coordinate, 0.0f, 0.0f, 1.0f)).x;
 
         if(axis == 'y' || axis == 'Y')
-            return glm::vec4(model * objTranslation * glm::vec4(0.0f, coordinate, 0.0f, 1.0f)).y;
+            return glm::vec4(objTranslation * model * glm::vec4(0.0f, coordinate, 0.0f, 1.0f)).y;
 
         if(axis == 'z' || axis == 'Z')
-            return glm::vec4(model * objTranslation * glm::vec4(0.0f, 0.0f, coordinate, 0.0f)).z;
+            return glm::vec4(objTranslation * model * glm::vec4(0.0f, 0.0f, coordinate, 0.0f)).z;
 
         return 0.0f;
     }
@@ -704,7 +1241,7 @@ class gameObject{
         // glm::vec3 c2 = glm::vec3(objPtr->model * glm::vec4(objPtr->physics.position, 1.0f));
 
         glm::vec4 origin(0.0f, 0.0f, 0.0f, 1.0f);
-        glm::vec3 c1 = glm::vec3(model * objTranslation * origin);
+        glm::vec3 c1 = glm::vec3(objTranslation * model * origin);
         glm::vec3 c2 = glm::vec3(objPtr->model * objPtr->objTranslation * origin);
 
         std::cout << "C1:" << c1.x << " " << c1.y << " " << c1.z << " " << "C2:" << c2.x << " " << c2.y << " " << c2.z << "\n";
@@ -741,7 +1278,7 @@ class gameObject{
         }
 
         glm::vec4 origin(0.0f, 0.0f, 0.0f, 1.0f);
-        glm::vec3 c1 = glm::vec3(model * objTranslation * origin);
+        glm::vec3 c1 = glm::vec3(objTranslation * model * origin);
         glm::vec3 c2 = glm::vec3(objPtr->model * objPtr->objTranslation * origin);
 
         if(this->isCircle)
@@ -843,7 +1380,7 @@ class gameObject{
         //positional correction
         overlapCorrection(coll, objPtr);
 
-        std::cout << "Collision\n" << coll.normal.x << " " << coll.normal.y << " " << coll.normal.z << std::endl;
+        // std::cout << "Collision\n" << coll.normal.x << " " << coll.normal.y << " " << coll.normal.z << std::endl;
 
         float e = (physics.coeffOfRestitution < objPtr->physics.coeffOfRestitution)? physics.coeffOfRestitution : objPtr->physics.coeffOfRestitution;
 
@@ -922,6 +1459,21 @@ class gameObject{
         object.setShader(modelShader);
     }
 
+    void setUniform(const std::string uniformName, float uniformValue)
+    {
+        object.setUniform(uniformName, uniformValue);
+    }
+
+    void setColor(glm::vec4 color)
+    {
+        object.setColor(color);
+    }
+
+    // void setHighlightColor(glm::vec4 color)
+    // {
+    //     object.setColor(color);
+    // }
+
     void setMass(float mass)
     {
         physics.mass = mass;
@@ -968,6 +1520,10 @@ class gameObject{
     }
 
     //get function to get diff values from the class
+    glm::vec4 getColor()
+    {
+        return object.getColor();
+    }
     bool getGravityStatus()
     {
         return physics.hasGravity;
@@ -1021,7 +1577,7 @@ class gameObject{
     void draw(light lightSource, glm::vec3 cameraPos)
     {
         objTranslation = glm::translate(glm::mat4(1.0f), physics.position);
-        object.useShader(model * objTranslation, lightSource, cameraPos);
+        object.useShader(objTranslation * model, lightSource, cameraPos);
         object.draw(isCircle);
     }
 
@@ -1136,18 +1692,18 @@ class player : public gameObject {
     void movements(GLFWwindow* window)
     {
         if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-            physics.position += glm::vec3(0.0f, 1.0f, 0.0f);
+            physics.position += glm::vec3(0.0f, 2.0f, 0.0f);
 
         if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-            physics.position += glm::vec3(0.0f, -1.0f, 0.0f);
+            physics.position += glm::vec3(0.0f, -2.0f, 0.0f);
 
         if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-            physics.position += glm::vec3(1.0f, 0.0f, 0.0f);
+            physics.position += glm::vec3(2.0f, 0.0f, 0.0f);
 
         if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-            physics.position += glm::vec3(-1.0f, 0.0f, 0.0f);
+            physics.position += glm::vec3(-2.0f, 0.0f, 0.0f);
     }
-    
+
     //camera stuff
     void updateCamera()
     {
@@ -1202,6 +1758,7 @@ class obstacle : public gameObject {
     obstacle()
     {
         object.setColor(glm::vec4(0.8f,0.8f,0.8f, 1.0f));
+        object.setHighlightColor(object.getColor());
         // physics.hasGravity = true;
         // physics.acceleration = GRAVITY;
 
@@ -1230,6 +1787,19 @@ class ground : public gameObject {
     ground()
     {
         object.setColor(glm::vec4(0.3f, 0.3f, 0.3f, 1.0f));
+        object.setHighlightColor(glm::vec4(0.8f, 0.3f, 0.3f, 1.0f));
+
+        physics.mass = 500;
+        physics.acceleration = GRAVITY;
+
+        physics.hasCollision = true;
+        physics.isStatic = true;
+    }
+
+    ground(shader* modelShader)
+    {
+        object.setShader(modelShader);
+        object.setColor(glm::vec4(0.2f,0.8f,0.2f, 1.0f));
 
         physics.mass = 500;
         physics.acceleration = GRAVITY;
